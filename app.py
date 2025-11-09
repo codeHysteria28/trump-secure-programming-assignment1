@@ -3,7 +3,8 @@ import sqlite3
 from flask import Flask, render_template, request, Response, redirect, url_for, flash, session, send_from_directory, abort, send_file
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
-
+from dotenv import load_dotenv
+load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = 'trump123'  # Set a secure secret key
@@ -163,6 +164,13 @@ def logout():
     session.pop('user_id', None)  # Remove user session
     flash('You were successfully logged out', 'success')
     return redirect(url_for('index'))
+
+# Test route to demonstrate debug mode vulnerability
+@app.route('/test-error')
+def test_error():
+    # This will intentionally cause a ZeroDivisionError
+    result = 1 / 0
+    return "This will never execute"
     
 from flask import session
 
@@ -171,4 +179,4 @@ if __name__ == '__main__':
     initialize_database()  # Initialize the database on application startup if it doesn't exist
     with app.app_context():
         db.create_all()  # Create tables based on models if they don't already exist
-    app.run(debug=True)
+    app.run(debug=os.getenv('FLASK_DEBUG', 'False') == 'True')
