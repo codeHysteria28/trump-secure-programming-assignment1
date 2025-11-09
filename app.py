@@ -114,12 +114,12 @@ def download_page():
 
 @app.route('/profile/<int:user_id>', methods=['GET'])
 def profile(user_id):
-    query_user = text(f"SELECT * FROM users WHERE id = {user_id}")
-    user = db.session.execute(query_user).fetchone()
+    sql = text("SELECT * FROM users WHERE id = :user_id")
+    user = db.session.execute(sql, {'user_id': user_id}).fetchone()
 
     if user:
-        query_cards = text(f"SELECT * FROM carddetail WHERE id = {user_id}")
-        cards = db.session.execute(query_cards).fetchall()
+        query_cards = text("SELECT * FROM carddetail WHERE id = :user_id")
+        cards = db.session.execute(query_cards, {'user_id': user_id}).fetchall()
         return render_template('profile.html', user=user, cards=cards)
     else:
         return "User not found or unauthorized access.", 403
@@ -138,11 +138,11 @@ def forum():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
+        username = request.form['username'].strip()
+        password = request.form['password'].strip()
 
-        query = text(f"SELECT * FROM users WHERE username = '{username}' AND password = '{password}'")
-        user = db.session.execute(query).fetchone()
+        sql = text("SELECT * FROM users WHERE username = :username AND password = :password")
+        user = db.session.execute(sql, {'username': username, 'password': password}).fetchone()
 
         if user:
             session['user_id'] = user.id
