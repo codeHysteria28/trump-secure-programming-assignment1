@@ -2,12 +2,15 @@ import os
 import sqlite3
 from flask import Flask, render_template, request, Response, redirect, url_for, flash, session, send_from_directory, abort, send_file
 from flask_sqlalchemy import SQLAlchemy
+from flask_security import auth_required
 from sqlalchemy import text
 from dotenv import load_dotenv
+from functools import wraps
+import hashlib
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = 'trump123'  # Set a secure secret key
+app.secret_key = os.urandom(256)  # Sets a random key of 256 bytes.
 
 # Configure the SQLite database
 db_path = os.path.join(os.path.dirname(__file__), 'trump.db')
@@ -22,6 +25,9 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
+    # Replacing old password model, with a hashed password model, and salt.
+    # hashedPassword = db.Column(db.String(64), unique=True, nullable=False)
+    # salt = db.Column(db.string(8), nullable=False)
 
     def __repr__(self):
         return f'<User {self.username}>'
@@ -36,6 +42,31 @@ def initialize_database():
             cursor.executescript(sql_script)
             print("Database initialized with script.")
 
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def is_admin(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if session['user_id'] == 1:
+            return f(*args, **kwargs)
+        else:
+            print(session['user_id'])
+            return redirect(url_for('login', next=request.url))
+    return decorated_function
+
+@app.before_request
+def HTTPSRedirect():
+    if not request.is_secure:
+        url = request.url.replace("http://", "https://", 1)
+        code = 301
+        return redirect(url, code=code)
+
 # Existing routes
 @app.route('/')
 def index():
@@ -46,10 +77,12 @@ def quotes():
     return render_template('quotes.html')
 
 @app.route('/sitemap')
+@login_required
 def sitemap():
     return render_template('sitemap.html')
     
 @app.route('/admin_panel')
+@is_admin
 def admin_panel():
     return render_template('admin_panel.html')
 
@@ -65,6 +98,7 @@ def redirect_handler():
 
 
 @app.route('/comments', methods=['GET', 'POST'])
+@login_required
 def comments():
     if request.method == 'POST':
         username = request.form['username']
@@ -82,6 +116,7 @@ def comments():
     return render_template('comments.html', comments=comments)
 
 @app.route('/download', methods=['GET'])
+@login_required
 def download():
     # Get the filename from the query parameter
     file_name = request.args.get('file', '')
@@ -108,29 +143,44 @@ def download():
         return "Permission denied while accessing the file", 403
         
 @app.route('/downloads', methods=['GET'])
+@login_required
 def download_page():
     return render_template('download.html')
 
 
 @app.route('/profile/<int:user_id>', methods=['GET'])
+@login_required
 def profile(user_id):
     sql = text("SELECT * FROM users WHERE id = :user_id")
     user = db.session.execute(sql, {'user_id': user_id}).fetchone()
 
-    if user:
+    try:
+        userId = user[0]
+    except:
+        userId = None
+
+    try:
+        currentUserId = session['user_id']
+    except:
+        currentUserId = None
+
+    if userId is not None and currentUserId is not None and userId == currentUserId:
         query_cards = text("SELECT * FROM carddetail WHERE id = :user_id")
         cards = db.session.execute(query_cards, {'user_id': user_id}).fetchall()
         return render_template('profile.html', user=user, cards=cards)
     else:
-        return "User not found or unauthorized access.", 403
+        return render_template('profile.html', error="User not found or unauthorized access."), 403
+        
 from flask import request
 
 @app.route('/search', methods=['GET'])
+@login_required
 def search():
     query = request.args.get('query')
     return render_template('search.html', query=query)
 
 @app.route('/forum')
+@login_required
 def forum():
     return render_template('forum.html')
 
@@ -140,9 +190,10 @@ def login():
     if request.method == 'POST':
         username = request.form['username'].strip()
         password = request.form['password'].strip()
+        passwordHashed = hashlib.sha256(password.encode('utf-8')).hexdigest()
 
         sql = text("SELECT * FROM users WHERE username = :username AND password = :password")
-        user = db.session.execute(sql, {'username': username, 'password': password}).fetchone()
+        user = db.session.execute(sql, {'username': username, 'password': passwordHashed}).fetchone()
 
         if user:
             session['user_id'] = user.id
@@ -154,10 +205,6 @@ def login():
 
     return render_template('login.html')
 
-
-
-
-
 # Logout route
 @app.route('/logout')
 def logout():
@@ -167,13 +214,14 @@ def logout():
 
 # Test route to demonstrate debug mode vulnerability
 @app.route('/test-error')
+@login_required
+@is_admin
 def test_error():
     # This will intentionally cause a ZeroDivisionError
     result = 1 / 0
     return "This will never execute"
     
 from flask import session
-
 
 if __name__ == '__main__':
     initialize_database()  # Initialize the database on application startup if it doesn't exist
