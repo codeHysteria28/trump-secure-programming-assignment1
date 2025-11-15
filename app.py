@@ -1,12 +1,12 @@
 import os
 import sqlite3
-from flask import Flask, render_template, request, Response, redirect, url_for, flash, session, send_from_directory, abort, send_file
+from flask import Flask, render_template, request, Response, redirect, url_for, flash, session
 from flask_sqlalchemy import SQLAlchemy
-from flask_security import auth_required
 from sqlalchemy import text
 from dotenv import load_dotenv
 from functools import wraps
 import hashlib
+from urllib.parse import urlparse
 load_dotenv()
 
 app = Flask(__name__)
@@ -25,9 +25,6 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
-    # Replacing old password model, with a hashed password model, and salt.
-    # hashedPassword = db.Column(db.String(64), unique=True, nullable=False)
-    # salt = db.Column(db.string(8), nullable=False)
 
     def __repr__(self):
         return f'<User {self.username}>'
@@ -42,6 +39,7 @@ def initialize_database():
             cursor.executescript(sql_script)
             print("Database initialized with script.")
 
+# If user does not have their "user_id" in the session token, it will redirect you to login
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -50,18 +48,22 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+# Python Decorator for Flask to be able to identify if the user is an administrator
+# Assumes person with ID of 1 is Admin.
+# 
+# If user is not the Admin, redirects them to login.
 def is_admin(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if session['user_id'] == 1:
+        if 'user_id' in session and session['user_id'] == 1:
             return f(*args, **kwargs)
         else:
-            print(session['user_id'])
             return redirect(url_for('login', next=request.url))
     return decorated_function
 
+# Forces HTTPS even in development mode.
 @app.before_request
-def HTTPSRedirect():
+def https_redirect():
     if not request.is_secure:
         url = request.url.replace("http://", "https://", 1)
         code = 301
@@ -91,8 +93,25 @@ def admin_panel():
 def redirect_handler():
     destination = request.args.get('destination')
 
-    if destination:
-        return redirect(destination)
+    destinationParsed = urlparse(destination)
+    currentURL = urlparse(request.base_url)
+
+    destinationPath = destinationParsed.path
+    destinationNetloc = destinationParsed.netloc
+    
+    currentURLnetloc = currentURL.netloc
+    
+    # This works if either:
+    # - BaseURL Net Location of the site (ex. [https://127.0.0.1:5000]/test) equals the destination (ex. [https://127.0.0.1:5000]/different_part_of_site) 
+    # - NetLocation doesn't exist due to it only being a relative path (ex. /comments/)
+
+    # This will fail on:
+    # - Using different URLs (ex. https://google.com)
+    # - Using different URL schemas (ftp://127.0.0.1)
+    # - Using auth combination bypasses (ex. https://127.0.0.1:5000@attackersite.zip)
+
+    if((currentURLnetloc == destinationNetloc) or (not destinationNetloc and destinationPath)):
+        return redirect(destination, code=302)
     else:
         return "Invalid destination", 400
 
@@ -123,21 +142,24 @@ def download():
 
     # Set base directory to where your docs folder is located
     base_directory = os.path.join(os.path.dirname(__file__), 'docs')
+    print(base_directory)
 
     # Construct the file path to attempt to read the file
     file_path = os.path.abspath(os.path.join(base_directory, file_name))
 
     # Ensure that the file path is within the base directory
-    #if not file_path.startswith(base_directory):
-     #   return "Unauthorized access attempt!", 403
+    if not file_path.startswith(base_directory):
+       return "Unauthorized access attempt!", 403
 
+    print(os.path.basename(file_path))
+    print(file_path)
     # Try to open the file securely
     try:
         with open(file_path, 'rb') as f:
             response = Response(f.read(), content_type='application/octet-stream')
             response.headers['Content-Disposition'] = f'attachment; filename="{os.path.basename(file_path)}"'
             return response
-    except FileNotFoundError:
+    except(FileNotFoundError, IsADirectoryError):
         return "File not found", 404
     except PermissionError:
         return "Permission denied while accessing the file", 403
@@ -182,7 +204,10 @@ def search():
 @app.route('/forum')
 @login_required
 def forum():
-    return render_template('forum.html')
+    try:
+        return render_template('forum.html')
+    except:
+        return redirect('/') 
 
 # Add login route
 @app.route('/login', methods=['GET', 'POST'])
@@ -190,6 +215,8 @@ def login():
     if request.method == 'POST':
         username = request.form['username'].strip()
         password = request.form['password'].strip()
+
+
         passwordHashed = hashlib.sha256(password.encode('utf-8')).hexdigest()
 
         sql = text("SELECT * FROM users WHERE username = :username AND password = :password")
@@ -227,4 +254,4 @@ if __name__ == '__main__':
     initialize_database()  # Initialize the database on application startup if it doesn't exist
     with app.app_context():
         db.create_all()  # Create tables based on models if they don't already exist
-    app.run(debug=os.getenv('FLASK_DEBUG', 'False') == 'True')
+    app.run(debug=os.getenv('FLASK_DEBUG', 'False') == 'True', ssl_context='adhoc')
